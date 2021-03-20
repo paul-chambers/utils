@@ -44,13 +44,12 @@ typedef enum {
 /* set up the logging mechanisms. Call once, very early. */
 void    initLogStuff( const char *name );
 
-/* configure the logging mechanisms, may be called multiple times */
-void    startLoggingStuff( eLogLevel logLevel, eLogDestination logDest, const char *logFile );
-
 /* tidy up the current logging mechanism */
-void stopLoggingStuff( void );
+void    stopLoggingStuff( void );
 
-void    setLogStuffDestination( eLogDestination logDestination, ... );
+void    setLogStuffDestination( eLogDestination logDestination );
+
+void    setLogStuffFileDestination( const char * path );
 
 void    setLogStuffLevel( eLogLevel logLevel );
 

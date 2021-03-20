@@ -8,7 +8,6 @@
 #include <syslog.h>
 #include <string.h>
 #include <errno.h>
-
 #include <dlfcn.h>
 
 #include "logStuff.h"
@@ -33,7 +32,8 @@ fpLogTo  gLogString;
 
 eLogLevel       gLogLevel = 0;
 eLogDestination gLogDestination = kLogToUndefined;
-const char *    gLogName = "";
+const char *    gMyName = "";
+const char *    gLogFilePath = NULL;
 FILE *          gLogFile;
 
 void *          gDLhandle = NULL;
@@ -83,11 +83,24 @@ void __cyg_profile_func_exit( void *this_fn, void *call_site )      DISABLE_FUNC
 /* }}}}}}}} DO NOT INSTRUMENT THE INSTRUMENTATION! }}}}}}}} */
 
 
-void initLogStuff( const char *name )
+void initLogStuff( const char * name )
 {
     int i;
+    const char * p;
+    const char * myName = name;
 
-    gLogName = name;
+    gMyName = "<not set>";
+    if ( name != NULL )
+    {
+        /* strip off the path, if there is one */
+        for ( p = name; *p != '\0'; p++ )
+        {
+            if ( *p != '/' )
+            { myName = p + 1; }
+        }
+
+        gMyName = strdup( myName );
+    }
 
     // initialize globals to something safe until startLogStuff has been invoked
     gLogDestination = kLogToUndefined;
@@ -122,7 +135,7 @@ void setLogStuffLevel( eLogLevel logLevel )
     gLogLevel = logLevel;
 }
 
-void setLogStuffDestination( eLogDestination logDest, ... )
+void setLogStuffDestination( eLogDestination logDest )
 {
     const char * logFile;
 
@@ -134,29 +147,15 @@ void setLogStuffDestination( eLogDestination logDest, ... )
         {
         case kLogToSyslog:
             setlogmask(LOG_UPTO ( LOG_DEBUG ));
-            openlog( gLogName, LOG_CONS | LOG_PID | LOG_NDELAY, LOG_LOCAL1);
+            openlog( gMyName, LOG_CONS | LOG_PID | LOG_NDELAY, LOG_LOCAL1);
 
             gLogString = &_logToSyslog;
             break;
 
         case kLogToFile:
             gLogString = &_logToStderr;
-
-            if ( logFile != NULL)
-            {
-                gLogFile = fopen( logFile, "a" );
-
-                if ( gLogFile != NULL)
-                {
-                    gLogString = &_logToFile;
-                }
-                else
-                {
-                    logDest = kLogToStderr;
-                    logError( "Unable to log to \"%s\" (%s [%d]), redirecting to stderr",
-                              logFile, strerror( errno ), errno );
-                }
-            }
+            logDest    = kLogToStderr;
+            logError( "Please use setLogStuffFileDestintation() instead" );
             break;
 
         case kLogToStderr:
@@ -171,10 +170,33 @@ void setLogStuffDestination( eLogDestination logDest, ... )
     }
 }
 
-void startLoggingStuff( eLogLevel logLevel, eLogDestination logDest, const char * logFile )
+void setLogStuffFileDestination( const char * logFile )
 {
-    setLogStuffLevel( logLevel );
-    setLogStuffDestination( logDest, logFile );
+    gLogString = &_logToStderr;
+
+    if ( gLogFilePath != NULL)
+    {
+        free( (void *)gLogFilePath );
+        gLogFilePath = NULL;
+    }
+
+    if ( logFile != NULL)
+    {
+        gLogFilePath = strdup( logFile );
+
+        gLogFile = fopen( gLogFilePath, "a" );
+
+        if ( gLogFile != NULL )
+        {
+            gLogString = &_logToFile;
+            gLogDestination = kLogToFile;
+        } else {
+            gLogString = &_logToStderr;
+            gLogDestination = kLogToStderr;
+            logError( "Unable to log to \"%s\" (%d: %s), redirecting to stderr",
+                      gLogFilePath, errno, strerror( errno ));
+        }
+    }
 }
 
 void stopLoggingStuff( void )
