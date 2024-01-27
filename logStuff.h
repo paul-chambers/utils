@@ -2,123 +2,96 @@
     logging macros, for my personal sanity...
 */
 
-#ifndef LOGGING_H
-#define LOGGING_H
+#ifndef LOGSTUFF_H
+#define LOGSTUFF_H
 
-#include    <syslog.h>
+#include <syslog.h>
+#include <dlfcn.h>
 
-typedef enum { false = 0, no = 0, off = 0,
-               true = 1, yes = 1,  on = 1 } tBool;
-
-#ifdef USE_LOG_SCOPING
-/* this is dynamically built by the Makefile */
-#include "obj/logscopes.inc"
-
-typedef struct {
-    unsigned int    level;
-    unsigned int    max;
-    unsigned char  *site;
-} gLogEntry;
-
-extern gLogEntry gLog[kMaxLogScope];
+#ifdef __cplusplus
+extern "C" {
 #endif
 
-typedef enum {
-    kLogToUndefined,
+typedef enum
+{
+    no  = 0, off = 0,
+    yes = 1, on = 1
+} tBool;
+
+typedef enum
+{
+    kLogEmergency = LOG_EMERG,    /* 0: system is unusable */
+    kLogAlert     = LOG_ALERT,    /* 1: action must be taken immediately */
+    kLogCritical  = LOG_CRIT,     /* 2: critical conditions */
+    kLogError     = LOG_ERR,      /* 3: error conditions */
+    kLogWarning   = LOG_WARNING,  /* 4: warning conditions */
+    kLogNotice    = LOG_NOTICE,   /* 5: normal but significant condition */
+    kLogInfo      = LOG_INFO,     /* 6: informational */
+    kLogDebug     = LOG_DEBUG,    /* 7: debug-level messages */
+    kLogFunctions,                /* (used for function entry/exit logging */
+    kLogMaxPriotity
+} eLogPriority;
+
+typedef enum
+{
+    kLogToTheVoid,
     kLogToSyslog,
     kLogToFile,
-    kLogToStderr
+    kLogToStderr,
+    kLogMaxDestination
 } eLogDestination;
 
-typedef enum {
-    kLogEmergency = LOG_EMERG,
-    kLogAlert     = LOG_ALERT,
-    kLogCritical  = LOG_CRIT,
-    kLogError     = LOG_ERR,
-    kLogWarning   = LOG_WARNING,
-    kLogNotice    = LOG_NOTICE,
-    kLogInfo      = LOG_INFO,
-    kLogDebug     = LOG_DEBUG
-} eLogLevel;
+typedef enum
+{
+    kLogNothing = 0,
+    kLogNormal,
+    kLogWithLocation
+} tLogMode;
 
 /* set up the logging mechanisms. Call once, very early. */
-void    initLogStuff( const char *name );
+void initLogStuff( const char * name );
 
 /* tidy up the current logging mechanism */
-void    stopLoggingStuff( void );
+void stopLoggingStuff( void );
 
-void    setLogStuffDestination( eLogDestination logDestination );
-
-void    setLogStuffFileDestination( const char * path );
-
-void    setLogStuffLevel( eLogLevel logLevel );
+void setLogStuffDestination( eLogPriority priority, eLogDestination logDestination );
 
 /* start/stop logging function entry & exit */
-void    logFunctionTrace( tBool onOff );
+void logFunctionTrace( tBool onOff );
 
-/* private helpers, used by preprocessor macros. Please don't use directly! */
-void    _log( unsigned int priority, const char *format, ... )
-            __attribute__((__format__ (__printf__, 2, 3))) __attribute__((no_instrument_function));
-void    _logWithLocation( const char *inFile, unsigned int atLine, unsigned int priority, const char *format, ... )
-            __attribute__((__format__ (__printf__, 4, 5))) __attribute__((no_instrument_function));
+/* private helper, which the preprocessor macros expand to. Please don't use directly! */
+void _log( const char * inFile,
+           unsigned int atLine,
+           const char * inFunction,
+           error_t error,
+           eLogPriority priority,
+           const char * format,
+           ... )
+__attribute__((__format__ (__printf__, 6, 7)))
+__attribute__((no_instrument_function));
 
-#define logEmergency(...)  logWithLocation( kLogEmergency, __VA_ARGS__ )
-#define logAlert(...)      logWithLocation( kLogAlert,     __VA_ARGS__ )
-#define logCritical(...)   logWithLocation( kLogCritical,  __VA_ARGS__ )
-#define logError(...)      logWithLocation( kLogError,     __VA_ARGS__ )
-#define logWarning(...)    log( kLogWarning, __VA_ARGS__ )
-#define logNotice(...)     log( kLogNotice,  __VA_ARGS__ )
-#define logInfo(...)       log( kLogInfo,    __VA_ARGS__ )
+#define log( priority, ... ) \
+    do { _log( __FILE__, __LINE__, __func__, errno, priority, __VA_ARGS__ ); } while (0)
+
+#define logEmergency( ... )  log( kLogEmergency, __VA_ARGS__ )
+#define logAlert( ... )      log( kLogAlert,     __VA_ARGS__ )
+#define logCritical( ... )   log( kLogCritical,  __VA_ARGS__ )
+#define logError( ... )      log( kLogError,     __VA_ARGS__ )
+#define logWarning( ... )    log( kLogWarning,   __VA_ARGS__ )
+#define logNotice( ... )     log( kLogNotice,    __VA_ARGS__ )
+#define logInfo( ... )       log( kLogInfo,      __VA_ARGS__ )
 
 #ifdef DEBUG
-#define logDebug(...)      logWithLocation( kLogDebug, __VA_ARGS__ )
+#define logDebug(...)      log( kLogDebug, __VA_ARGS__ )
 #define logCheckpoint()    do { _log( __FILE__, __LINE__, kLogDebug, "reached" ); } while (0)
 #else
-#define logDebug(...)      do {} while (0)
-#define logCheckpoint()    do {} while (0)
+#define logDebug( ... )      do {} while (0)
+#define logCheckpoint()      do {} while (0)
+#define logSetErrno( val )   do {} while (0)
 #endif
 
-#ifdef USE_LOG_SCOPING
-#define _logCheck_expand_again(priority, scope, id)  \
-        ( gLogLevel >= priority \
-          && gLog[kLog_##scope].max > id \
-          && gLog[kLog_##scope].level >= priority     \
-          && gLog[kLog_##scope].site[id] == 0 )
-
-#define logCheck( priority, scope, id )   _logCheck_expand_again( priority, scope, id )
-
-#define log(priority, ...) \
-    do { if (  logCheck( priority, LOG_SCOPE, __COUNTER__ ) ) _log( priority, __VA_ARGS__ ); } while (0)
-
-#define logWithLocation(priority, ...) \
-    do { \
-        if (  logCheck( priority, LOG_SCOPE, __COUNTER__ ) ) _logWithLocation( __FILE__, __LINE__, priority, __VA_ARGS__ ); \
-    } while (0)
-#else
-#define log( priority, ... ) \
-    do { if (  gLogLevel >= priority ) _log( priority, __VA_ARGS__ ); } while (0)
-
-#define logWithLocation( priority, ... ) \
-    do { if (  gLogLevel >= priority ) _logWithLocation( __FILE__, __LINE__, priority, __VA_ARGS__ ); } while (0)
+#ifdef __cplusplus
+}
 #endif
 
 #endif
-
-/*
-    things to do at the end of each source file to support scoped logging
-*/
-
-#ifdef USE_LOG_SCOPING
-
-/* this defines a 'maximum' value for the site ID for each scope, of the form gLogMax<scope> */
-#define logDSMhelper(scope, counter) unsigned int gLogMax_##scope = counter
-#define logDefineScopeMaximum( scope, counter)  logDSMhelper( scope, counter )
-
-#define LOG_STUFF_EPILOGUE logDefineScopeMaximum( LOG_SCOPE , __COUNTER__ );
-
-#else
-
-#define LOG_STUFF_EPILOGUE
-
-#endif
-

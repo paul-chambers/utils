@@ -1,4 +1,6 @@
+#ifndef _GNU_SOURCE
 #define  _GNU_SOURCE  /* dladdr is a gcc extension */
+#endif
 
 #include <unistd.h>
 #include <stdio.h>
@@ -9,6 +11,7 @@
 #include <string.h>
 #include <errno.h>
 #include <dlfcn.h>
+#include <time.h>
 
 #include "logStuff.h"
 
@@ -18,21 +21,86 @@
 #elif defined(__LCLINT__)
 # define UNUSED(x) /*@unused@*/ x
 #else
-# define UNUSED(x) x
+# define UNUSED(x) (void)x
 #endif
 
-#ifdef USE_LOG_SCOPING
-gLogEntry gLog[kMaxLogScope];
+#ifdef __cplusplus
+extern "C" {
 #endif
 
-/* use a function pointer to handle the logging destination */
-typedef void (*fpLogTo)( unsigned int priority, const char *msg );
+const char * gPriorityAsStr[] =
+{
+    [kLogEmergency] = "Emergemcy",  /* 0: system is unusable */
+    [kLogAlert]	    = "Alert",      /* 1: action must be taken immediately */
+    [kLogCritical]  = "Critical",   /* 2: critical conditions */
+    [kLogError]	    = "Err",        /* 3: error conditions */
+    [kLogWarning]   = "Wrn",    /* 4: warning conditions */
+    [kLogNotice]    = "Not",     /* 5: normal but significant condition */
+    [kLogInfo]	    = "Inf",       /* 6: informational */
+    [kLogDebug]	    = "Dbg",      /* 7: debug-level messages */
+    [kLogFunctions] = ""            /* function call output */
+};
 
-fpLogTo  gLogString;
+typedef enum {
+    kColorBlack    = 0,
+    kColorRed      = 1,
+    kColorGreen    = 2,
+    kColorYellow   = 3,
+    kColorBlue     = 4,
+    kColorMagenta  = 5,
+    kColorCyan     = 6,
+    kColorWhite    = 7,
+    kColorReset,
+    kColorNop
+} eANSIColor;
 
-eLogLevel       gLogLevel = 0;
-eLogDestination gLogDestination = kLogToUndefined;
-const char *    gMyName = "";
+const char * gSetColor[] = {
+    [kColorBlack]    = "\e[1;40m",
+    [kColorRed]      = "\e[1;41m",
+    [kColorGreen]    = "\e[1;42m",
+    [kColorYellow]   = "\e[1;43m",
+    [kColorBlue]     = "\e[1;44m",
+    [kColorMagenta]  = "\e[1;45m",
+    [kColorCyan]     = "\e[1;46m",
+    [kColorWhite]    = "\e[1;47m",
+    [kColorReset]    = "\e[1;0m",
+    [kColorNop]      = "",
+};
+
+eANSIColor gPrioritySetColor[] =
+{
+   [kLogEmergency]  = kColorRed,       /* 0: system is unusable */
+   [kLogAlert]      = kColorRed,       /* 1: action must be taken immediately */
+   [kLogCritical]   = kColorRed,       /* 2: critical conditions */
+   [kLogError]      = kColorRed,       /* 3: error conditions */
+   [kLogWarning]    = kColorYellow,    /* 4: warning conditions */
+   [kLogNotice]     = kColorGreen,     /* 5: normal but significant condition */
+   [kLogInfo]       = kColorGreen,     /* 6: informational */
+   [kLogDebug]      = kColorNop,       /* 7: debug-level messages */
+   [kLogFunctions]  = kColorNop        /* function call output */
+};
+
+eANSIColor gPriorityResetColor[] =
+{
+   [kLogEmergency]  = kColorReset,     /* 0: system is unusable */
+   [kLogAlert]      = kColorReset,     /* 1: action must be taken immediately */
+   [kLogCritical]   = kColorReset,     /* 2: critical conditions */
+   [kLogError]      = kColorReset,     /* 3: error conditions */
+   [kLogWarning]    = kColorReset,     /* 4: warning conditions */
+   [kLogNotice]     = kColorReset,     /* 5: normal but significant condition */
+   [kLogInfo]       = kColorReset,     /* 6: informational */
+   [kLogDebug]      = kColorNop,       /* 7: debug-level messages */
+   [kLogFunctions]  = kColorNop        /* function call output */
+};
+
+struct {
+    eLogDestination destination;
+    tLogMode        mode;
+} gLogSetting[kLogMaxPriotity];
+
+eLogDestination gLogDestination;
+
+const char *    gMyName;
 const char *    gLogFilePath = NULL;
 FILE *          gLogFile;
 
@@ -40,12 +108,7 @@ void *          gDLhandle = NULL;
 tBool           gFunctionTraceEnabled = off;
 int             gCallDepth = 1;
 
-static char *leader = "..........................................................................................";
-
-#ifdef USE_LOG_SCOPING
-/* dynamically built by the Makefile */
-#include "obj/logscopedefs.inc"
-#endif
+static const char *leader = "..........................................................................................";
 
 #ifdef __GNUC__
 #define DISABLE_FUNCTION_INSTRUMENTATION  __attribute__((no_instrument_function))
@@ -55,125 +118,147 @@ static char *leader = ".........................................................
 
 /* {{{{{{{{ DO NOT INSTRUMENT THE INSTRUMENTATION! {{{{{{{{ */
 
-void initLogStuff( const char *name )                               DISABLE_FUNCTION_INSTRUMENTATION;
 
-void _log( unsigned int priority, const char *format, ... )         DISABLE_FUNCTION_INSTRUMENTATION;
+void initLogStuff( const char *name )    DISABLE_FUNCTION_INSTRUMENTATION;
 
-void _logWithLocation( const char *inFile,
-                       unsigned int atLine,
-                       unsigned int priority,
-                       const char *format, ... )                    DISABLE_FUNCTION_INSTRUMENTATION;
+void _log( const char * inFile,
+           unsigned int atLine,
+           const char * inFunction,
+           error_t      error,
+           eLogPriority priority,
+           const char * format, ... )    DISABLE_FUNCTION_INSTRUMENTATION;
 
-void _logToTheVoid( unsigned int priority, const char *msg )        DISABLE_FUNCTION_INSTRUMENTATION;
-void _logToSyslog(  unsigned int priority, const char *msg )        DISABLE_FUNCTION_INSTRUMENTATION;
-void _logToFile(    unsigned int priority, const char *msg )        DISABLE_FUNCTION_INSTRUMENTATION;
-void _logToStderr(  unsigned int priority, const char *msg )        DISABLE_FUNCTION_INSTRUMENTATION;
+void _logToTheVoid( eLogPriority priority, const char *msg )   DISABLE_FUNCTION_INSTRUMENTATION;
+void _logToSyslog(  eLogPriority priority, const char *msg )   DISABLE_FUNCTION_INSTRUMENTATION;
+void _logToFile(    eLogPriority priority, const char *msg )   DISABLE_FUNCTION_INSTRUMENTATION;
+void _logToStderr(  eLogPriority priority, const char *msg )   DISABLE_FUNCTION_INSTRUMENTATION;
 
-void _logString( unsigned int priority, const char *format )        DISABLE_FUNCTION_INSTRUMENTATION;
+void _profileHelper( void *leftAddr, const char *middle, void *rightAddr )  DISABLE_FUNCTION_INSTRUMENTATION;
 
-void _profileHelper( void *left, const char *middle, void *right )  DISABLE_FUNCTION_INSTRUMENTATION;
-
-const char *addrToString( void *addr, char *scratch )               DISABLE_FUNCTION_INSTRUMENTATION;
+const char * addressToString( void * addr, char * scratch )    DISABLE_FUNCTION_INSTRUMENTATION;
 
 #ifdef __GNUC__
-void __cyg_profile_func_enter( void *this_fn, void *call_site )     DISABLE_FUNCTION_INSTRUMENTATION;
-void __cyg_profile_func_exit( void *this_fn, void *call_site )      DISABLE_FUNCTION_INSTRUMENTATION;
+void __cyg_profile_func_enter( void * this_fn, void * call_site )     DISABLE_FUNCTION_INSTRUMENTATION;
+void __cyg_profile_func_exit( void * this_fn, void * call_site )      DISABLE_FUNCTION_INSTRUMENTATION;
 #endif
 
 /* }}}}}}}} DO NOT INSTRUMENT THE INSTRUMENTATION! }}}}}}}} */
 
 
+void _logToTheVoid( eLogPriority UNUSED(priority), const char * UNUSED(msg))  { /* just return */ }
+
+void _logToSyslog( eLogPriority priority, const char * msg )         { syslog( priority, "%s", msg ); }
+
+void _logToFile( eLogPriority UNUSED(priority), const char *msg )
+{
+    fprintf(gLogFile, "%lu: %s\n", time( NULL ), msg );
+}
+
+/* stderr is has colored output */
+void _logToStderr( eLogPriority priority, const char *msg )
+{
+    fprintf(stderr, "%lu: %s%s%s\n",
+            time( NULL ),
+            gSetColor[ gPrioritySetColor[ priority ] ],
+            msg,
+            gSetColor[ gPriorityResetColor[ priority ] ] );
+}
+
+/* use function pointers to invoke the logging destination */
+typedef void (*fpLogTo)( eLogPriority priority, const char * msg );
+fpLogTo gLogOutputFP[kLogMaxDestination] =
+{
+    [kLogToTheVoid] = &_logToTheVoid,
+    [kLogToSyslog]  = &_logToSyslog,
+    [kLogToFile]    = &_logToFile,
+    [kLogToStderr]  = &_logToStderr
+};
+
+/*
+ * the macros eventually expand to invoke this help function
+ */
+
+void _log( const char *inPath,
+           unsigned int atLine,
+           const char * UNUSED(inFunction),
+           error_t error,
+           unsigned int priority,
+           const char *format, ...)
+{
+    va_list vaptr;
+    char    msg[1024];
+    int     prefixLen;
+
+    if ( gLogSetting[ priority ].destination != kLogToTheVoid )
+    {
+        va_start( vaptr, format );
+
+        prefixLen = 0;
+        /* if the destination isn't syslog, prefix the message with the priority */
+        if ( priority <= kLogDebug && gLogSetting[priority].destination != kLogToSyslog)
+        {
+            prefixLen = snprintf( msg, sizeof( msg ), "%s [%d]: ",
+                                  gPriorityAsStr[ priority ],
+                                  getpid() );
+        }
+
+        prefixLen += vsnprintf( &msg[ prefixLen ], sizeof( msg ) - prefixLen, format, vaptr );
+
+        if (error != 0)
+        {
+            prefixLen += snprintf( &msg[ prefixLen ], sizeof( msg ) - prefixLen, " (%d: %s)",
+                                    error, strerror( error ) );
+        }
+
+        if ( gLogSetting[ priority ].mode == kLogWithLocation )
+        {
+            snprintf( &msg[ prefixLen ], sizeof( msg ) - prefixLen, " @ %s:%d", inFile, atLine );
+        }
+
+        ( gLogOutputFP[ gLogSetting[ priority ].destination ] )( priority, msg );
+
+        va_end( vaptr );
+    }
+}
+
+
 void initLogStuff( const char * name )
 {
-    int i;
-    const char * p;
-    const char * myName = name;
-
     gMyName = "<not set>";
     if ( name != NULL )
     {
         /* strip off the path, if there is one */
-        for ( p = name; *p != '\0'; p++ )
+        const char * p = strrchr( name, '/');
+        if ( p++ == NULL )
         {
-            if ( *p != '/' )
-            { myName = p + 1; }
+            p = name;
         }
 
-        gMyName = strdup( myName );
+        gMyName = strdup( p );
+    }
+    openlog( gMyName, LOG_CONS | LOG_PID | LOG_NDELAY, LOG_LOCAL1);
+
+    // initialize gEvent to something safe until startLogStuff has been invoked
+
+    for ( int i = 0; i < kLogMaxPriotity; ++i )
+    {
+        gLogSetting[i].mode        = kLogWithLocation;
+        gLogSetting[i].destination = kLogToStderr;
     }
 
-    // initialize globals to something safe until startLogStuff has been invoked
-    gLogDestination = kLogToUndefined;
-    gLogLevel       = kLogDebug;
-    gLogFile        = stderr;
-    gLogString      = &_logToStderr;
-
-    gDLhandle       = dlopen(NULL, RTLD_LAZY);
-
-#ifdef USE_LOG_SCOPING
-    // dynamically defined in logscopedefs.inc by Makefile
-    logLogInit();
-
-   	for ( i = 0; i < kMaxLogScope; ++i )
-   	{
-        gLog[i].level = kLogDebug;
-        if ( gLog[i].site == NULL )
-        {
-            logCritical("### Failed to allocate memory for logging - exiting\n");
-            exit(ENOMEM); // fatal
-        }
-
-        logDebug("%s scope has %u log statements", logScopeNames[i], gLog[i].max);
-    }
-#endif
+    gDLhandle = dlopen(NULL, RTLD_LAZY);
 
     logFunctionTrace( off );
 }
 
-void setLogStuffLevel( eLogLevel logLevel )
+void setLogStuffDestination( eLogPriority priority, eLogDestination logDest )
 {
-    gLogLevel = logLevel;
-}
+    // stopLoggingStuff();
 
-void setLogStuffDestination( eLogDestination logDest )
-{
-    const char * logFile;
-
-    if ( logDest != gLogDestination )
-    {
-        stopLoggingStuff();
-
-        switch ( logDest )
-        {
-        case kLogToSyslog:
-            setlogmask(LOG_UPTO ( LOG_DEBUG ));
-            openlog( gMyName, LOG_CONS | LOG_PID | LOG_NDELAY, LOG_LOCAL1);
-
-            gLogString = &_logToSyslog;
-            break;
-
-        case kLogToFile:
-            gLogString = &_logToStderr;
-            logDest    = kLogToStderr;
-            logError( "Please use setLogStuffFileDestintation() instead" );
-            break;
-
-        case kLogToStderr:
-            gLogString = &_logToStderr;
-            break;
-
-        default:
-            gLogString = &_logToTheVoid;
-            break;
-        }
-        gLogDestination = logDest;
-    }
 }
 
 void setLogStuffFileDestination( const char * logFile )
 {
-    gLogString = &_logToStderr;
-
     if ( gLogFilePath != NULL)
     {
         free( (void *)gLogFilePath );
@@ -188,11 +273,8 @@ void setLogStuffFileDestination( const char * logFile )
 
         if ( gLogFile != NULL )
         {
-            gLogString = &_logToFile;
-            gLogDestination = kLogToFile;
-        } else {
-            gLogString = &_logToStderr;
-            gLogDestination = kLogToStderr;
+        }
+        else {
             logError( "Unable to log to \"%s\" (%d: %s), redirecting to stderr",
                       gLogFilePath, errno, strerror( errno ));
         }
@@ -201,6 +283,11 @@ void setLogStuffFileDestination( const char * logFile )
 
 void stopLoggingStuff( void )
 {
+    for ( int i = kLogMaxPriotity; i <= 0; --i)
+    {
+        gLogOutputFP[i] = NULL;
+    }
+
     switch (gLogDestination)
     {
     case kLogToSyslog:
@@ -209,115 +296,58 @@ void stopLoggingStuff( void )
 
     case kLogToFile:
         fclose( gLogFile );
-        gLogFile = stderr;
+        gLogFile = NULL;
         break;
 
-        // don't do anything for the other cases
     default:
+        // don't do anything for the other cases
         break;
     }
-    //gLogString = &_logToTheVoid;
-    gLogDestination = kLogToUndefined; // just in case startLogStuff is called again
 }
 
-void _logToTheVoid(unsigned int UNUSED(priority), const char * UNUSED(msg))  { /* just return */ }
-
-#pragma GCC diagnostic push
-/* suppress the bogus warning. It's fine, the string has already been preprocessed */
-#pragma GCC diagnostic ignored "-Wformat-security"
-void _logToSyslog( unsigned int priority, const char * msg )        { syslog( priority, msg ); }
-#pragma GCC diagnostic pop
-
-void _logToFile(unsigned int UNUSED(priority), const char *msg)     { fprintf(gLogFile, "%s\n", msg); }
-
-void _logToStderr(unsigned int UNUSED(priority), const char *msg)   { fprintf(stderr, "%s\n", msg); }
-
-
-void _log(unsigned int priority, const char *format, ...)
+const char * addressToString( void *addr, char *scratch)
 {
-    va_list vaptr;
-    char    msg[256];
-
-    va_start(vaptr, format);
-
-    vsnprintf( msg, sizeof(msg), format, vaptr );
-
-    gLogString(priority, msg);
-
-    va_end(vaptr);
-}
-
-void _logWithLocation(const char *inFile, unsigned int atLine, unsigned int priority, const char *format, ...)
-{
-    va_list vaptr;
-    char    msg[256];
-    int     prefixLen, remaining;
-
-    va_start(vaptr, format);
-
-    prefixLen = vsnprintf( msg, sizeof(msg), format, vaptr );
-
-    remaining = sizeof(msg) - prefixLen - 1;
-
-    if ( remaining > 10 )
-    {
-        snprintf( &msg[prefixLen], remaining, " (%s:%d)", inFile, atLine );
-    }
-
-    gLogString(priority, msg);
-
-    va_end(vaptr);
-}
-
-const char * addrToString(void *addr, char *scratch)
-{
-    const char   *str;
+    const char   *result;
     Dl_info info;
 
-    str = NULL;
+    result = NULL;
     if (gDLhandle != NULL )
     {
         dladdr(addr, &info);
-        str = info.dli_sname;
+        result = info.dli_sname;
     }
-    if (str == NULL)
+    if (result == NULL)
     {
-        sprintf( scratch, "0x%08lx", (unsigned long)addr);
-        str = scratch;
+        sprintf( scratch, "%p", addr);
+        result = scratch;
     }
-    return str;
+    return result;
+}
+
+#ifdef __GNUC__
+
+/* helper function for logging function entry and exit */
+void _profileHelper( void *leftAddr, const char *middle, void *rightAddr)
+{
+    // some scratch space, in case addressToString needs it. avoids needless malloc churn
+    char leftAddrAsStr[64];
+    char rightAddrAsStr[64];
+    char msg[256];
+
+    if ( gFunctionTraceEnabled && gLogOutputFP[kLogFunctions] != NULL )
+    {
+        addressToString( leftAddr,  leftAddrAsStr  );
+        addressToString( rightAddr, rightAddrAsStr );
+        snprintf( msg, sizeof(msg), "%.*s %s() %s %s()",
+                  gCallDepth, leader, leftAddrAsStr, middle, rightAddrAsStr );
+        (*logDestFP)( kLogFunctions, msg);
+    }
 }
 
 /*
-    gcc inserts calls to these functions at the beginning and end of every
-    compiled function when the -finstrument-functions option is used.
-
-    If just left on, this generates so much logging that it's rarely useful.
-    Please use logFunctionTrace to turn on tracing only around the
-    code/situation you care about.
+    if the -finstrument-functions option is used with gcc, it inserts calls
+    to these functions at the beginning and end of every compiled function.
 */
-
-#ifdef __GNUC__
-void _profileHelper(void *left, const char *middle, void *right)
-{
-    // some scratch space, in case addrToString needs it. avoids needless malloc churn
-    char leftScratch[16];
-    char rightScratch[16];
-    char msg[256];
-
-    if (gFunctionTraceEnabled && gLogDestination != kLogToUndefined)
-    {
-        snprintf( msg, sizeof(msg), "%.*s %s() %s %s()",
-                 gCallDepth, leader, addrToString(left, leftScratch), middle, addrToString(right, rightScratch));
-        gLogString(kLogDebug, msg);
-    }
-}
-
-/* start or stop logging entry & exit of functions */
-void logFunctionTrace( tBool onOff )
-{
-    gFunctionTraceEnabled = onOff;
-}
 
 /* just landed in a function */
 void __cyg_profile_func_enter(void *this_fn, void *call_site)
@@ -329,10 +359,22 @@ void __cyg_profile_func_enter(void *this_fn, void *call_site)
 /* about to leave a function */
 void __cyg_profile_func_exit(void *this_fn, void *call_site)
 {
-    --gCallDepth;
-    if (gCallDepth < 1) gCallDepth = 1;
+    if (--gCallDepth < 1) gCallDepth = 1;
     _profileHelper( this_fn, "returned to", call_site );
+}
+
+/*
+    If just left on, this generates so much logging that it's rarely useful.
+    Please use logFunctionTrace to turn on tracing only around the code
+    or situation you care about.
+*/
+void logFunctionTrace( tBool onOff )
+{
+    gFunctionTraceEnabled = onOff;
+}
+
+#ifdef __cplusplus
 }
 #endif
 
-LOG_STUFF_EPILOGUE
+#endif
